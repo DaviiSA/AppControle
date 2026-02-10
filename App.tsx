@@ -4,7 +4,10 @@ import { Transaction, TransactionType } from './types';
 import { TransactionForm } from './components/TransactionForm';
 import { syncToGoogleSheets, loadFromGoogleSheets } from './services/googleSheetsService';
 
+type ViewState = 'home' | 'dashboard';
+
 const App: React.FC = () => {
+  const [currentView, setCurrentView] = useState<ViewState>('home');
   const [transactions, setTransactions] = useState<Transaction[]>(() => {
     const saved = localStorage.getItem('finansmart_data_v2');
     return saved ? JSON.parse(saved) : [];
@@ -27,14 +30,14 @@ const App: React.FC = () => {
   };
 
   const deleteTransaction = (id: string) => {
-    if (confirm('Excluir este registro?')) {
+    if (confirm('Deseja realmente excluir este registro?')) {
       setTransactions(transactions.filter(t => t.id !== id));
     }
   };
 
   const handleSync = async () => {
     if (!sheetUrl) {
-      alert("Por favor, configure a URL da Planilha primeiro.");
+      alert("Configure a URL da Planilha nas configurações.");
       return;
     }
     setIsSyncing(true);
@@ -44,7 +47,6 @@ const App: React.FC = () => {
       setTimeout(() => setSyncStatus('idle'), 3000);
     } catch (e) {
       setSyncStatus('error');
-      alert("Erro ao sincronizar. Verifique se a URL do Apps Script está correta e permite acesso.");
     } finally {
       setIsSyncing(false);
     }
@@ -52,14 +54,13 @@ const App: React.FC = () => {
 
   const handleLoad = async () => {
     if (!sheetUrl) return;
-    if (!confirm("Isso irá substituir seus dados locais pelos da planilha. Continuar?")) return;
+    if (!confirm("Isso substituirá seus dados locais pelos da nuvem. Continuar?")) return;
     setIsSyncing(true);
     try {
       const data = await loadFromGoogleSheets(sheetUrl);
       setTransactions(data);
-      alert("Dados carregados com sucesso!");
     } catch (e) {
-      alert("Erro ao carregar dados. Verifique a URL do seu Google Apps Script.");
+      alert("Erro ao carregar dados.");
     } finally {
       setIsSyncing(false);
     }
@@ -74,253 +75,359 @@ const App: React.FC = () => {
     return dueDate < today;
   };
 
-  // Ordenação por data (mais recente primeiro para receitas, cronológica para gastos)
   const sortedTransactions = useMemo(() => {
     return [...transactions].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }, [transactions]);
 
-  const grouped = useMemo(() => {
-    return {
-      receitas: sortedTransactions.filter(t => t.type === 'RECEITA').reverse(),
-      gastosFixos: sortedTransactions.filter(t => t.type === 'GASTO_FIXO'),
-      gastosCartoes: sortedTransactions.filter(t => t.type === 'GASTO_CARTAO'),
-      gastosDiversos: sortedTransactions.filter(t => t.type === 'GASTO_DIVERSO'),
-      cartoesDetalhe: {
-        'BaneseCard': sortedTransactions.filter(t => t.cardName === 'BaneseCard'),
-        'Nubank Davi': sortedTransactions.filter(t => t.cardName === 'Nubank Davi'),
-        'Torra': sortedTransactions.filter(t => t.cardName === 'Torra'),
-        'Iti Tuy': sortedTransactions.filter(t => t.cardName === 'Iti Tuy'),
-      }
-    };
-  }, [sortedTransactions]);
+  const grouped = useMemo(() => ({
+    receitas: sortedTransactions.filter(t => t.type === 'RECEITA').reverse(),
+    gastosFixos: sortedTransactions.filter(t => t.type === 'GASTO_FIXO'),
+    gastosCartoes: sortedTransactions.filter(t => t.type === 'GASTO_CARTAO'),
+    cartoes: {
+      'BaneseCard': sortedTransactions.filter(t => t.cardName === 'BaneseCard'),
+      'Nubank Davi': sortedTransactions.filter(t => t.cardName === 'Nubank Davi'),
+      'Torra': sortedTransactions.filter(t => t.cardName === 'Torra'),
+      'Iti Tuy': sortedTransactions.filter(t => t.cardName === 'Iti Tuy'),
+    } as Record<string, Transaction[]>
+  }), [sortedTransactions]);
 
   const totals = useMemo(() => {
     const income = grouped.receitas.reduce((a, b) => a + b.amount, 0);
-    const fixed = grouped.gastosFixos.reduce((a, b) => a + b.amount, 0);
-    const cards = grouped.gastosCartoes.reduce((a, b) => a + b.amount, 0);
-    const divers = grouped.gastosDiversos.reduce((a, b) => a + b.amount, 0);
-    
+    const expenses = transactions.filter(t => t.type !== 'RECEITA').reduce((a, b) => a + b.amount, 0);
     const fixedPending = grouped.gastosFixos.filter(t => !t.isPaid).reduce((a, b) => a + b.amount, 0);
     const cardsPending = grouped.gastosCartoes.filter(t => !t.isPaid).reduce((a, b) => a + b.amount, 0);
-    
-    return {
-      income,
-      expenses: fixed + cards + divers,
-      balance: income - (fixed + cards + divers),
-      fixedPending,
-      cardsPending
-    };
-  }, [grouped]);
+    return { income, expenses, balance: income - expenses, fixedPending, cardsPending };
+  }, [transactions, grouped]);
 
-  const TableHeader = ({ title, color }: { title: string, color: string }) => (
-    <div className={`${color} text-center py-1.5 font-bold text-sm uppercase border-x border-t border-black shadow-sm`}>
-      {title}
-    </div>
-  );
-
-  const MoneyCell = ({ val, isRed = false }: { val: number, isRed?: boolean }) => (
-    <span className={isRed ? 'text-red-600 font-bold' : ''}>
-      R$ {val.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-    </span>
-  );
-
-  return (
-    <div className="bg-[#F0F2F5] min-h-screen p-4 md:p-8 font-sans text-[13px]">
-      <header className="max-w-[1400px] mx-auto mb-8 flex flex-col md:flex-row justify-between items-center bg-white p-5 rounded-xl shadow-sm border border-gray-100 gap-4">
-        <div className="w-full md:w-auto">
-          <h1 className="text-2xl font-black text-gray-800 tracking-tighter">FINANCEIRO <span className="text-blue-600">PRO</span></h1>
-          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2 mt-1">
-            <input 
-              type="text" 
-              placeholder="Cole a URL do Apps Script aqui..." 
-              value={sheetUrl}
-              onChange={(e) => setSheetUrl(e.target.value)}
-              className="text-[10px] border border-gray-200 rounded px-2 py-1.5 w-full sm:w-80 outline-none focus:border-blue-400 bg-gray-50 transition-colors"
-            />
-            {sheetUrl && (
-              <button onClick={handleLoad} className="text-[10px] text-blue-600 font-black hover:text-blue-800 transition-colors px-2 py-1 bg-blue-50 rounded">CARREGAR DA PLANILHA</button>
-            )}
+  // View: Tela Inicial (Home)
+  if (currentView === 'home') {
+    return (
+      <div className="min-h-screen bg-[#F8FAFC] flex flex-col">
+        <header className="p-6 flex justify-between items-center max-w-7xl mx-auto w-full">
+          <div className="flex items-center gap-2">
+            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-indigo-200 shadow-lg">
+              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+            </div>
+            <span className="text-2xl font-black tracking-tight text-slate-800">Finan<span className="text-indigo-600">Smart</span></span>
           </div>
-        </div>
-        
-        <div className="flex w-full md:w-auto gap-3">
-          <button 
-            onClick={handleSync}
-            disabled={isSyncing}
-            className={`flex-1 md:flex-none ${syncStatus === 'success' ? 'bg-green-600' : 'bg-gray-800'} text-white px-6 py-3 rounded-lg font-bold hover:opacity-90 transition-all shadow-lg flex items-center justify-center gap-2 disabled:opacity-50`}
-          >
-            <svg className={`w-4 h-4 ${isSyncing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
-            </svg>
-            {isSyncing ? 'SINCRONIZANDO...' : syncStatus === 'success' ? 'DADOS SALVOS!' : 'SALVAR NA NUVEM'}
-          </button>
+        </header>
 
-          <button 
-            onClick={() => setIsFormOpen(true)}
-            className="flex-1 md:flex-none bg-blue-600 text-white px-8 py-3 rounded-lg font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 flex items-center justify-center gap-2"
-          >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 4v16m8-8H4"></path></svg>
-            NOVO LANÇAMENTO
-          </button>
-        </div>
-      </header>
+        <main className="flex-1 flex flex-col items-center justify-center px-4 py-12">
+          <div className="max-w-4xl w-full text-center space-y-8 animate-in fade-in slide-in-from-bottom-8 duration-700">
+            <h1 className="text-5xl md:text-7xl font-black text-slate-900 leading-tight tracking-tighter">
+              Sua vida financeira <br />
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-violet-600">em total equilíbrio.</span>
+            </h1>
+            <p className="text-lg text-slate-500 max-w-2xl mx-auto font-medium">
+              Controle suas receitas, gastos fixos e cartões de crédito em um só lugar. Simples, moderno e integrado com a nuvem.
+            </p>
 
-      {/* Alerta de Contas Vencidas */}
-      {transactions.some(t => isOverdue(t.date, t.isPaid)) && (
-        <div className="max-w-[1400px] mx-auto mb-6 bg-red-100 border-l-4 border-red-500 p-4 rounded-lg flex items-center gap-3 animate-pulse">
-           <svg className="w-6 h-6 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-           <span className="text-red-700 font-bold uppercase text-xs">Atenção: Você possui contas com pagamento em atraso!</span>
-        </div>
-      )}
-
-      <div className="max-w-[1400px] mx-auto grid grid-cols-1 xl:grid-cols-4 gap-6 items-start pb-10">
-        
-        <div className="space-y-6">
-          <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-            <TableHeader title="RECEITAS" color="bg-[#92D050]" />
-            <table className="w-full border-collapse border-x border-b border-black">
-              <thead className="bg-gray-100 border-b border-black text-[11px]">
-                <tr>
-                  <th className="border-r border-black p-1.5 w-16">Data</th>
-                  <th className="border-r border-black p-1.5">Descrição</th>
-                  <th className="p-1.5">Valor</th>
-                </tr>
-              </thead>
-              <tbody>
-                {grouped.receitas.length === 0 ? (
-                  <tr><td colSpan={3} className="p-4 text-center text-gray-400 italic">Nenhuma receita</td></tr>
-                ) : grouped.receitas.map(t => (
-                  <tr key={t.id} className="border-b border-gray-200 group hover:bg-green-50">
-                    <td className="border-r border-black p-1.5 text-center">{new Date(t.date).toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' })}</td>
-                    <td className="border-r border-black p-1.5 font-medium">{t.description}</td>
-                    <td className="p-1.5 text-right relative">
-                      <MoneyCell val={t.amount} />
-                      <button onClick={() => deleteTransaction(t.id)} className="absolute -right-2 top-2 opacity-0 group-hover:opacity-100 transition-opacity bg-red-500 text-white w-5 h-5 rounded-full text-[10px] flex items-center justify-center">×</button>
-                    </td>
-                  </tr>
-                ))}
-                <tr className="bg-[#FFFF00] font-bold border-t border-black">
-                  <td colSpan={2} className="border-r border-black p-1.5 text-right uppercase">TOTAL</td>
-                  <td className="p-1.5 text-right"><MoneyCell val={totals.income} /></td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <section className="bg-[#D1D5DB] p-5 border border-black rounded-lg shadow-inner">
-            <h3 className="text-xs font-black mb-3 text-gray-700 uppercase tracking-widest">Resumo Consolidado</h3>
-            <div className="space-y-3 font-bold">
-              <div className="flex justify-between items-center bg-white/50 p-3 rounded border border-black/10">
-                <span className="text-gray-600">GANHOS</span>
-                <MoneyCell val={totals.income} />
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 max-w-3xl mx-auto pt-4">
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Saldo Atual</span>
+                <span className={`text-2xl font-black ${totals.balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  R$ {totals.balance.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
               </div>
-              <div className="flex justify-between items-center bg-white/50 p-3 rounded border border-black/10">
-                <span className="text-gray-600">GASTOS</span>
-                <MoneyCell val={totals.expenses} />
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Despesas</span>
+                <span className="text-2xl font-black text-slate-800">
+                  R$ {totals.expenses.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
               </div>
-              <div className={`flex justify-between items-center p-3 rounded border border-black/20 shadow-md ${totals.balance >= 0 ? 'bg-green-500 text-white' : 'bg-red-600 text-white'}`}>
-                <span>FICOU</span>
-                <MoneyCell val={totals.balance} />
+              <div className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 flex flex-col items-center">
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Pendências</span>
+                <span className="text-2xl font-black text-rose-500">
+                  R$ {(totals.fixedPending + totals.cardsPending).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                </span>
               </div>
             </div>
-          </section>
-        </div>
 
-        <div className="xl:col-span-1 space-y-6">
-          <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-            <TableHeader title="GASTOS FIXOS" color="bg-[#FF6600] text-white" />
-            <table className="w-full border-collapse border-x border-b border-black">
-              <thead className="bg-gray-100 border-b border-black text-[11px]">
-                <tr>
-                  <th className="border-r border-black p-1.5 w-16">Venc.</th>
-                  <th className="border-r border-black p-1.5">Despesa</th>
-                  <th className="border-r border-black p-1.5">Valor</th>
-                  <th className="p-1.5 w-10">Pago?</th>
-                </tr>
-              </thead>
-              <tbody>
-                {grouped.gastosFixos.map(t => (
-                  <tr key={t.id} className={`border-b border-gray-200 transition-colors ${isOverdue(t.date, t.isPaid) ? 'bg-red-50' : 'hover:bg-orange-50'}`}>
-                    <td className={`border-r border-black p-1.5 text-center font-bold ${isOverdue(t.date, t.isPaid) ? 'text-red-600' : ''}`}>
-                      {new Date(t.date).toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' })}
-                    </td>
-                    <td className="border-r border-black p-1.5 font-medium">{t.description}</td>
-                    <td className="border-r border-black p-1.5 text-right relative group">
-                      <MoneyCell val={t.amount} />
-                      <button onClick={() => deleteTransaction(t.id)} className="absolute -right-1 top-1.5 opacity-0 group-hover:opacity-100 transition-opacity text-red-400 text-[10px]">×</button>
-                    </td>
-                    <td className="p-1.5 text-center">
-                      <input type="checkbox" checked={t.isPaid} onChange={() => togglePaid(t.id)} className="w-4 h-4 cursor-pointer accent-orange-600" title={isOverdue(t.date, t.isPaid) ? "VENCIDO!" : ""} />
-                    </td>
-                  </tr>
-                ))}
-                <tr className="bg-[#FFFF00] font-bold border-t border-black">
-                  <td colSpan={2} className="border-r border-black p-1.5 text-right uppercase italic">Falta pagar</td>
-                  <td colSpan={2} className="p-1.5 text-center"><MoneyCell val={totals.fixedPending} /></td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-
-          <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-            <TableHeader title="GASTOS COM CARTÕES" color="bg-[#FF6600] text-white" />
-            <table className="w-full border-collapse border-x border-b border-black">
-              <tbody>
-                {(Object.entries(grouped.cartoesDetalhe) as [string, Transaction[]][]).map(([name, items]) => {
-                  const cardTotal = items.reduce((a, b) => a + b.amount, 0);
-                  const isPaid = items.length > 0 && items.every(i => i.isPaid);
-                  const hasOverdue = items.some(i => isOverdue(i.date, i.isPaid));
-                  if (cardTotal === 0) return null;
-                  return (
-                    <tr key={name} className={`border-b border-gray-300 ${hasOverdue ? 'bg-red-50 animate-pulse' : ''}`}>
-                      <td className="border-r border-black p-2 text-center font-bold text-gray-400">--</td>
-                      <td className="border-r border-black p-2 font-bold">{name}</td>
-                      <td className="border-r border-black p-2 text-right font-bold"><MoneyCell val={cardTotal} /></td>
-                      <td className="p-2 text-center">
-                         <div className={`w-3.5 h-3.5 rounded-full mx-auto shadow-sm ${isPaid ? 'bg-green-500' : hasOverdue ? 'bg-red-600 scale-125' : 'bg-red-400'}`}></div>
-                      </td>
-                    </tr>
-                  )
-                })}
-                 <tr className="bg-[#FFFF00] font-bold border-t border-black">
-                  <td colSpan={2} className="border-r border-black p-2 text-right uppercase italic">Falta pagar</td>
-                  <td colSpan={2} className="p-2 text-center"><MoneyCell val={totals.cardsPending} /></td>
-                </tr>
-              </tbody>
-            </table>
-          </section>
-        </div>
-
-        <div className="xl:col-span-2 grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-6">
-            <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-              <TableHeader title="BaneseCard" color="bg-[#31859C] text-white" />
-              <CardDetailTable items={grouped.cartoesDetalhe['BaneseCard']} isOverdueFn={isOverdue} />
-            </section>
-            <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-              <TableHeader title="Torra" color="bg-[#7030A0] text-white" />
-              <CardDetailTable items={grouped.cartoesDetalhe['Torra']} isOverdueFn={isOverdue} />
-            </section>
+            <div className="flex flex-col sm:flex-row gap-4 justify-center pt-8">
+              <button 
+                onClick={() => setCurrentView('dashboard')}
+                className="bg-indigo-600 text-white px-10 py-5 rounded-3xl font-black text-lg hover:bg-indigo-700 transition-all shadow-2xl shadow-indigo-200 flex items-center justify-center gap-3"
+              >
+                ACESSAR DASHBOARD
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M13 7l5 5m0 0l-5 5m5-5H6"></path></svg>
+              </button>
+              <button 
+                onClick={() => setIsFormOpen(true)}
+                className="bg-white text-slate-800 border-2 border-slate-100 px-10 py-5 rounded-3xl font-black text-lg hover:bg-slate-50 transition-all flex items-center justify-center gap-3"
+              >
+                NOVO LANÇAMENTO
+              </button>
+            </div>
           </div>
-          <div className="space-y-6">
-            <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-              <TableHeader title="Nubank Davi" color="bg-[#7030A0] text-white" />
-              <CardDetailTable items={grouped.cartoesDetalhe['Nubank Davi']} isOverdueFn={isOverdue} />
-            </section>
-            <section className="bg-white rounded-lg overflow-hidden shadow-sm">
-              <TableHeader title="Iti Tuy" color="bg-[#FFC000] text-black" />
-              <CardDetailTable items={grouped.cartoesDetalhe['Iti Tuy']} isOverdueFn={isOverdue} />
-            </section>
-          </div>
-        </div>
+        </main>
 
+        <footer className="p-8 text-center text-slate-400 text-xs font-bold uppercase tracking-[0.3em]">
+          Gerenciamento Financeiro Inteligente • Cloud Sync
+        </footer>
+
+        {isFormOpen && (
+          <TransactionForm 
+            onAdd={(data) => setTransactions([{ ...data, id: Math.random().toString(36).substr(2, 9) }, ...transactions])} 
+            onClose={() => setIsFormOpen(false)} 
+          />
+        )}
       </div>
+    );
+  }
+
+  // View: Dashboard (Visual que já criamos, melhorado)
+  return (
+    <div className="bg-[#F8FAFC] min-h-screen font-sans text-slate-900 pb-20 animate-in fade-in duration-500">
+      {/* Top Navigation */}
+      <nav className="bg-white border-b border-slate-200 sticky top-0 z-40 backdrop-blur-md bg-white/80">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex justify-between h-20 items-center">
+            <button onClick={() => setCurrentView('home')} className="flex items-center gap-2 group">
+              <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-indigo-200 shadow-lg group-hover:scale-105 transition-transform">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+              </div>
+              <span className="text-xl font-black tracking-tight text-slate-800">Finan<span className="text-indigo-600">Smart</span></span>
+            </button>
+
+            <div className="hidden lg:flex items-center gap-4">
+              <div className="relative group">
+                <input 
+                  type="text" 
+                  placeholder="URL do Apps Script..." 
+                  value={sheetUrl}
+                  onChange={(e) => setSheetUrl(e.target.value)}
+                  className="text-xs border border-slate-200 rounded-2xl px-5 py-2.5 w-72 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-400 outline-none transition-all bg-slate-50"
+                />
+                {sheetUrl && (
+                  <button onClick={handleLoad} className="absolute right-2 top-1.5 text-[10px] bg-white px-3 py-1.5 rounded-xl border border-slate-200 font-black hover:bg-slate-50 shadow-sm transition-all active:scale-95">RECARREGAR ↓</button>
+                )}
+              </div>
+              <button 
+                onClick={handleSync}
+                className={`flex items-center gap-2 px-6 py-2.5 rounded-2xl text-xs font-black transition-all shadow-sm active:scale-95 ${syncStatus === 'success' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-900 text-white hover:bg-black'}`}
+              >
+                <div className={`w-1.5 h-1.5 rounded-full ${isSyncing ? 'bg-amber-400 animate-pulse' : syncStatus === 'success' ? 'bg-emerald-500' : 'bg-indigo-400'}`}></div>
+                {isSyncing ? 'Salvando...' : syncStatus === 'success' ? 'Salvo com Sucesso' : 'Sincronizar Nuvem'}
+              </button>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setIsFormOpen(true)}
+                className="bg-indigo-600 text-white px-6 py-3 rounded-2xl font-black text-xs tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 active:scale-95 flex items-center gap-2"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 4v16m8-8H4"></path></svg>
+                NOVO
+              </button>
+            </div>
+          </div>
+        </div>
+      </nav>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10">
+        
+        {/* Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
+          <SummaryCard title="Entradas" amount={totals.income} icon="trending-up" color="emerald" />
+          <SummaryCard title="Saídas" amount={totals.expenses} icon="trending-down" color="rose" />
+          <SummaryCard title="Meu Saldo" amount={totals.balance} icon="wallet" color="indigo" highlight />
+        </div>
+
+        {/* Overdue Alert */}
+        {transactions.some(t => isOverdue(t.date, t.isPaid)) && (
+          <div className="mb-10 bg-rose-50 border border-rose-100 p-6 rounded-3xl flex items-center gap-5 shadow-xl shadow-rose-50 border-l-8 border-l-rose-500">
+            <div className="w-12 h-12 bg-rose-500 rounded-2xl flex items-center justify-center text-white shadow-lg shadow-rose-200 shrink-0">
+              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+            </div>
+            <div>
+              <p className="text-rose-900 font-black text-lg tracking-tight">Vencimentos Pendentes!</p>
+              <p className="text-rose-600 text-sm font-medium">Você tem contas atrasadas que precisam de atenção imediata.</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+          
+          <div className="lg:col-span-8 space-y-8">
+            {/* Receitas Table */}
+            <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 overflow-hidden transition-all hover:shadow-md">
+              <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
+                <h3 className="font-black text-slate-800 uppercase tracking-widest text-xs">Histórico de Receitas</h3>
+                <span className="text-[11px] font-black text-emerald-600 bg-emerald-100/50 px-4 py-1.5 rounded-full">R$ {totals.income.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="overflow-x-auto px-4 pb-4">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-50">
+                      <th className="px-6 py-5">Dia</th>
+                      <th className="px-6 py-5">Origem</th>
+                      <th className="px-6 py-5 text-right">Valor</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {grouped.receitas.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50/80 transition-colors group">
+                        <td className="px-6 py-4 text-xs font-bold text-slate-400">{new Date(t.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}</td>
+                        <td className="px-6 py-4 font-black text-slate-700">{t.description}</td>
+                        <td className="px-6 py-4 text-right relative">
+                           <span className="text-emerald-600 font-black">R$ {t.amount.toFixed(2)}</span>
+                           <button onClick={() => deleteTransaction(t.id)} className="ml-4 opacity-0 group-hover:opacity-100 text-slate-300 hover:text-rose-500 transition-all">
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                           </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {grouped.receitas.length === 0 && (
+                      <tr><td colSpan={3} className="py-10 text-center text-slate-300 font-bold italic text-sm uppercase tracking-widest">Nenhuma receita lançada</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Gastos Fixos Table */}
+            <div className="bg-white rounded-[2rem] shadow-sm border border-slate-100 overflow-hidden transition-all hover:shadow-md">
+              <div className="p-8 border-b border-slate-50 flex justify-between items-center bg-slate-50/30">
+                <h3 className="font-black text-slate-800 uppercase tracking-widest text-xs">Gastos Fixos Mensais</h3>
+                <span className="text-[11px] font-black text-rose-600 bg-rose-100/50 px-4 py-1.5 rounded-full">PENDENTE: R$ {totals.fixedPending.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}</span>
+              </div>
+              <div className="overflow-x-auto px-4 pb-4">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="text-slate-400 text-[10px] font-black uppercase tracking-widest border-b border-slate-50">
+                      <th className="px-6 py-5">Data</th>
+                      <th className="px-6 py-5">Descrição</th>
+                      <th className="px-6 py-5 text-right">Valor</th>
+                      <th className="px-6 py-5 text-center">Ação</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {grouped.gastosFixos.map(t => (
+                      <tr key={t.id} className={`hover:bg-slate-50 transition-colors group ${isOverdue(t.date, t.isPaid) ? 'bg-rose-50/20' : ''}`}>
+                        <td className={`px-6 py-4 text-xs font-black ${isOverdue(t.date, t.isPaid) ? 'text-rose-500' : 'text-slate-400'}`}>
+                          {new Date(t.date).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' })}
+                        </td>
+                        <td className="px-6 py-4 font-black text-slate-700">{t.description}</td>
+                        <td className="px-6 py-4 text-right font-black text-slate-800">R$ {t.amount.toFixed(2)}</td>
+                        <td className="px-6 py-4 text-center">
+                          <button 
+                            onClick={() => togglePaid(t.id)}
+                            className={`px-5 py-2 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 ${t.isPaid ? 'bg-emerald-500 text-white shadow-lg shadow-emerald-100' : isOverdue(t.date, t.isPaid) ? 'bg-rose-500 text-white shadow-lg shadow-rose-200' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                          >
+                            {t.isPaid ? 'Pago' : isOverdue(t.date, t.isPaid) ? 'Pagar Já' : 'Pagar'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {grouped.gastosFixos.length === 0 && (
+                      <tr><td colSpan={4} className="py-10 text-center text-slate-300 font-bold italic text-sm uppercase tracking-widest">Nenhum gasto fixo</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Credit Cards Grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+              {Object.entries(grouped.cartoes).map(([name, items]) => {
+                const cardItems = items as Transaction[];
+                if (cardItems.length === 0) return null;
+                const cardTotal = cardItems.reduce((a, b) => a + b.amount, 0);
+                const hasOverdue = cardItems.some(i => isOverdue(i.date, i.isPaid));
+                
+                return (
+                  <div key={name} className={`bg-white rounded-[2rem] shadow-sm border border-slate-100 overflow-hidden transition-all hover:-translate-y-1 hover:shadow-xl ${hasOverdue ? 'ring-2 ring-rose-500 ring-offset-4 ring-offset-[#F8FAFC]' : ''}`}>
+                    <div className="p-6 bg-slate-900 flex justify-between items-center">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-7 bg-slate-700 rounded-lg border border-slate-600 relative overflow-hidden flex items-center justify-center">
+                           <div className="w-3 h-3 bg-amber-400 rounded-full blur-[1px]"></div>
+                        </div>
+                        <h4 className="text-white font-black text-xs uppercase tracking-widest">{name}</h4>
+                      </div>
+                      <span className="text-white font-black text-sm">R$ {cardTotal.toFixed(2)}</span>
+                    </div>
+                    <div className="p-6 space-y-4">
+                      {cardItems.map(item => (
+                        <div key={item.id} className="flex justify-between items-start text-xs border-b border-slate-50 pb-3 last:border-0">
+                          <div className="flex flex-col gap-1">
+                            <span className="font-black text-slate-700">{item.description}</span>
+                            <div className="flex gap-2 items-center">
+                              <span className="text-[9px] bg-slate-100 text-slate-500 px-2 py-0.5 rounded font-bold uppercase tracking-widest">{item.installments || 'À vista'}</span>
+                              <span className="text-[9px] text-slate-400 font-bold">{new Date(item.date).toLocaleDateString('pt-BR')}</span>
+                            </div>
+                          </div>
+                          <div className="text-right flex flex-col items-end gap-1">
+                            <span className="font-black text-slate-900">R$ {item.amount.toFixed(2)}</span>
+                            <div className={`w-2 h-2 rounded-full ${item.isPaid ? 'bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : isOverdue(item.date, item.isPaid) ? 'bg-rose-500 animate-pulse' : 'bg-slate-200'}`}></div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Right Sidebar */}
+          <div className="lg:col-span-4 space-y-8 sticky top-28">
+             {/* Score Card */}
+             <div className="bg-gradient-to-br from-indigo-600 to-violet-700 rounded-[2.5rem] p-8 text-white shadow-2xl shadow-indigo-200 relative overflow-hidden">
+               <div className="absolute -right-10 -top-10 w-40 h-40 bg-white/10 rounded-full blur-3xl"></div>
+               <h4 className="text-[10px] font-black uppercase tracking-[0.3em] mb-6 text-indigo-100">Eficiência Financeira</h4>
+               
+               <div className="space-y-6 relative z-10">
+                 <div className="flex items-end justify-between">
+                   <div className="flex flex-col">
+                     <span className="text-3xl font-black">{Math.max(0, 100 - Math.min(100, (totals.expenses / (totals.income || 1) * 100))).toFixed(0)}</span>
+                     <span className="text-[10px] font-black uppercase tracking-widest text-indigo-200">Score de Economia</span>
+                   </div>
+                   <div className="text-right">
+                     <span className="text-sm font-bold block">{((totals.income - totals.expenses) / (totals.income || 1) * 100).toFixed(0)}%</span>
+                     <span className="text-[10px] font-black uppercase tracking-widest text-indigo-200">Margem Livre</span>
+                   </div>
+                 </div>
+
+                 <div className="w-full bg-white/20 h-4 rounded-full overflow-hidden p-1">
+                   <div className="bg-white h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(100, (totals.expenses / (totals.income || 1) * 100))}%` }}></div>
+                 </div>
+
+                 <div className="p-4 bg-white/10 rounded-2xl border border-white/10 backdrop-blur-sm">
+                   <p className="text-xs font-medium leading-relaxed italic text-indigo-50">
+                     {totals.balance > 0 
+                      ? "Você está retendo uma boa parte da sua renda. Continue assim para atingir seus objetivos!" 
+                      : "Suas despesas estão elevadas. Revise seus gastos fixos e evite novas compras no cartão."}
+                   </p>
+                 </div>
+               </div>
+             </div>
+
+             {/* Action Center */}
+             <div className="bg-white rounded-[2.5rem] p-8 border border-slate-100 shadow-sm">
+               <h4 className="text-[10px] font-black uppercase tracking-widest text-slate-400 mb-6">Menu do Sistema</h4>
+               <div className="grid grid-cols-1 gap-3">
+                 <button onClick={() => setIsFormOpen(true)} className="w-full flex items-center justify-between p-4 rounded-[1.5rem] bg-slate-50 hover:bg-indigo-50 hover:text-indigo-600 transition-all group font-black text-xs uppercase tracking-widest border border-transparent hover:border-indigo-100">
+                   Novo Registro
+                   <div className="w-8 h-8 bg-white rounded-xl flex items-center justify-center shadow-sm group-hover:bg-indigo-600 group-hover:text-white transition-all">
+                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M12 4v16m8-8H4"></path></svg>
+                   </div>
+                 </button>
+                 <button onClick={handleSync} className="w-full flex items-center justify-between p-4 rounded-[1.5rem] bg-slate-50 hover:bg-emerald-50 hover:text-emerald-600 transition-all group font-black text-xs uppercase tracking-widest border border-transparent hover:border-emerald-100">
+                   Salvar Agora
+                   <div className="w-8 h-8 bg-white rounded-xl flex items-center justify-center shadow-sm group-hover:bg-emerald-500 group-hover:text-white transition-all">
+                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"></path></svg>
+                   </div>
+                 </button>
+               </div>
+             </div>
+          </div>
+
+        </div>
+      </main>
 
       {isFormOpen && (
         <TransactionForm 
-          onAdd={(data) => {
-            setTransactions([{ ...data, id: Math.random().toString(36).substr(2, 9) }, ...transactions]);
-          }} 
+          onAdd={(data) => setTransactions([{ ...data, id: Math.random().toString(36).substr(2, 9) }, ...transactions])} 
           onClose={() => setIsFormOpen(false)} 
         />
       )}
@@ -328,45 +435,34 @@ const App: React.FC = () => {
   );
 };
 
-const CardDetailTable = ({ items, isOverdueFn }: { items: Transaction[], isOverdueFn: (d: string, p: boolean) => boolean }) => {
-  const total = items.reduce((a, b) => a + b.amount, 0);
+const SummaryCard = ({ title, amount, icon, color, highlight = false }: { title: string, amount: number, icon: string, color: string, highlight?: boolean }) => {
+  const colors: Record<string, string> = {
+    emerald: 'text-emerald-600 bg-emerald-50',
+    rose: 'text-rose-600 bg-rose-50',
+    indigo: 'text-indigo-600 bg-indigo-50',
+  };
+
+  const icons: Record<string, React.ReactElement> = {
+    'trending-up': <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"></path></svg>,
+    'trending-down': <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M13 17h8m0 0v-8m0 8l-8-8-4 4-6-6"></path></svg>,
+    'wallet': <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"></path></svg>,
+  };
+
   return (
-    <table className="w-full border-collapse border-x border-b border-black">
-      <thead className="bg-gray-50 border-b border-black text-[10px] uppercase font-bold text-gray-500">
-        <tr>
-          <th className="border-r border-black p-1.5">Valor</th>
-          <th className="border-r border-black p-1.5">Descrição</th>
-          <th className="border-r border-black p-1.5">Data</th>
-          <th className="p-1.5">Parc.</th>
-        </tr>
-      </thead>
-      <tbody>
-        {items.length === 0 ? (
-           Array(4).fill(0).map((_, i) => (
-            <tr key={i} className={`h-7 border-b border-gray-100 ${i % 2 === 0 ? 'bg-white' : 'bg-[#F4F1FA]'}`}>
-              <td className="border-r border-black p-1.5"></td><td className="border-r border-black p-1.5"></td><td className="border-r border-black p-1.5"></td><td className="p-1.5"></td>
-            </tr>
-          ))
-        ) : (
-          items.map((t, idx) => (
-            <tr key={t.id} className={`border-b border-gray-200 ${idx % 2 === 0 ? 'bg-white' : 'bg-[#F4F1FA]'} hover:bg-blue-50 transition-colors`}>
-              <td className={`border-r border-black p-1.5 text-right font-bold ${isOverdueFn(t.date, t.isPaid) ? 'text-red-600' : 'text-gray-700'}`}>
-                R$ {t.amount.toFixed(2)}
-              </td>
-              <td className="border-r border-black p-1.5 text-gray-600 font-medium">{t.description}</td>
-              <td className={`border-r border-black p-1.5 text-center text-[11px] font-bold ${isOverdueFn(t.date, t.isPaid) ? 'text-red-600' : ''}`}>
-                {new Date(t.date).toLocaleDateString('pt-BR', { day: 'numeric', month: 'numeric' })}
-              </td>
-              <td className="p-1.5 text-center font-black text-indigo-600">{t.installments || '-'}</td>
-            </tr>
-          ))
-        )}
-        <tr className="bg-[#FFFF00] font-black border-t border-black">
-          <td className="border-r border-black p-1.5 text-right">R$ {total.toFixed(2)}</td>
-          <td colSpan={3} className="bg-white border-none"></td>
-        </tr>
-      </tbody>
-    </table>
+    <div className={`p-8 rounded-[2.5rem] border transition-all hover:shadow-xl hover:-translate-y-1 ${highlight ? 'bg-white border-indigo-100 shadow-2xl shadow-indigo-50' : 'bg-white border-slate-100 shadow-sm'}`}>
+      <div className="flex justify-between items-center mb-6">
+        <span className="text-[10px] font-black uppercase tracking-[0.2em] text-slate-400">{title}</span>
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shadow-sm ${colors[color]}`}>
+          {icons[icon]}
+        </div>
+      </div>
+      <div className="flex items-baseline gap-1.5">
+        <span className="text-slate-400 text-sm font-bold">R$</span>
+        <span className={`text-3xl font-black tracking-tighter ${highlight && amount < 0 ? 'text-rose-600' : highlight ? 'text-indigo-600' : 'text-slate-800'}`}>
+          {amount.toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+        </span>
+      </div>
+    </div>
   );
 };
 
